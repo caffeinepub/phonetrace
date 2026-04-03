@@ -8,27 +8,33 @@
 
 import { IDL } from '@icp-sdk/core/candid';
 
+export const SessionStatus = IDL.Variant({
+  'expired' : IDL.Null,
+  'pending' : IDL.Null,
+  'completed' : IDL.Null,
+});
 export const Location = IDL.Record({
   'lat' : IDL.Float64,
   'lng' : IDL.Float64,
   'timestamp' : IDL.Int,
   'accuracy' : IDL.Float64,
 });
-export const TrackingSession = IDL.Record({
+export const SessionOutput = IDL.Record({
   'id' : IDL.Text,
+  'status' : SessionStatus,
   'expiresAt' : IDL.Int,
   'createdAt' : IDL.Int,
-  'isActive' : IDL.Bool,
-  'consentGiven' : IDL.Bool,
+  'requesterName' : IDL.Text,
   'phoneNumber' : IDL.Text,
   'location' : IDL.Opt(Location),
+  'reason' : IDL.Text,
 });
 
 export const idlService = IDL.Service({
-  'createSession' : IDL.Func([IDL.Text], [IDL.Text], []),
-  'deactivateSession' : IDL.Func([IDL.Text], [IDL.Bool], []),
-  'getActiveSessions' : IDL.Func([], [IDL.Vec(TrackingSession)], ['query']),
-  'getSession' : IDL.Func([IDL.Text], [IDL.Opt(TrackingSession)], ['query']),
+  'createSession' : IDL.Func([IDL.Text, IDL.Text, IDL.Text], [IDL.Text], []),
+  'expireSession' : IDL.Func([IDL.Text], [IDL.Bool], []),
+  'getAllSessions' : IDL.Func([], [IDL.Vec(SessionOutput)], ['query']),
+  'getSession' : IDL.Func([IDL.Text], [IDL.Opt(SessionOutput)], ['query']),
   'submitLocation' : IDL.Func(
       [IDL.Text, IDL.Float64, IDL.Float64, IDL.Float64],
       [IDL.Bool],
@@ -39,27 +45,33 @@ export const idlService = IDL.Service({
 export const idlInitArgs = [];
 
 export const idlFactory = ({ IDL }) => {
+  const SessionStatus = IDL.Variant({
+    'expired' : IDL.Null,
+    'pending' : IDL.Null,
+    'completed' : IDL.Null,
+  });
   const Location = IDL.Record({
     'lat' : IDL.Float64,
     'lng' : IDL.Float64,
     'timestamp' : IDL.Int,
     'accuracy' : IDL.Float64,
   });
-  const TrackingSession = IDL.Record({
+  const SessionOutput = IDL.Record({
     'id' : IDL.Text,
+    'status' : SessionStatus,
     'expiresAt' : IDL.Int,
     'createdAt' : IDL.Int,
-    'isActive' : IDL.Bool,
-    'consentGiven' : IDL.Bool,
+    'requesterName' : IDL.Text,
     'phoneNumber' : IDL.Text,
     'location' : IDL.Opt(Location),
+    'reason' : IDL.Text,
   });
   
   return IDL.Service({
-    'createSession' : IDL.Func([IDL.Text], [IDL.Text], []),
-    'deactivateSession' : IDL.Func([IDL.Text], [IDL.Bool], []),
-    'getActiveSessions' : IDL.Func([], [IDL.Vec(TrackingSession)], ['query']),
-    'getSession' : IDL.Func([IDL.Text], [IDL.Opt(TrackingSession)], ['query']),
+    'createSession' : IDL.Func([IDL.Text, IDL.Text, IDL.Text], [IDL.Text], []),
+    'expireSession' : IDL.Func([IDL.Text], [IDL.Bool], []),
+    'getAllSessions' : IDL.Func([], [IDL.Vec(SessionOutput)], ['query']),
+    'getSession' : IDL.Func([IDL.Text], [IDL.Opt(SessionOutput)], ['query']),
     'submitLocation' : IDL.Func(
         [IDL.Text, IDL.Float64, IDL.Float64, IDL.Float64],
         [IDL.Bool],

@@ -1,49 +1,37 @@
-# PhoneTrace — Phone Intelligence & Consent-Based Location Sharing
+# PhoneTrace — Dual Location Dashboard
 
 ## Current State
-New project. No existing application files.
+Dashboard shows only the target's location (single red/default marker). Requester location is not captured or shown. Map has a single Leaflet marker with accuracy circle. No distance calculation.
 
 ## Requested Changes (Diff)
 
 ### Add
-- Home page: phone number input with Indian telecom prefix lookup (operator + circle/state)
-- Phone lookup engine using a bundled static JSON dataset (first 4 digits → operator + circle)
-- Indian number format validation (10-digit mobile, with optional +91 prefix)
-- "Request Location" flow: generates a unique UUID-based tracking session stored in Motoko canister
-- Shareable link: `/track/{session-id}` — user copies and sends manually
-- Consent page (`/track/:id`): shows request message + "Allow Location" button; GPS captured only after explicit click
-- Location data sent to Motoko backend only after browser GPS permission granted
-- Tracking dashboard: Leaflet.js map with live marker, accuracy radius circle, last-updated timestamp, auto-polling every 5 seconds
-- Session expiry logic (30-minute TTL on sessions)
-- Privacy & Terms page
-- Dark glassmorphism UI with Framer Motion animations
+- "Show My Location" button on the dashboard (appears once target location is received)
+- Requester location state (lat/lng) stored in component state only (no backend storage)
+- On button click: request browser geolocation permission → capture coords → show blue marker on map
+- Red marker for target location (🔴)
+- Blue marker for requester location (🔵)
+- Thin polyline (dashed) connecting the two markers when both are present
+- Haversine distance calculation between both markers, displayed as "Distance: X.X km away"
+- Map auto-fits bounds to show both markers when both are present
+- Distance card in the info panel showing calculated distance
 
 ### Modify
-N/A — new project
+- DashboardPage.tsx: replace single Marker with conditional dual-marker setup
+- Map center/zoom: when both locations exist, fit bounds to include both; otherwise center on target
+- Info panel: add "Requester Location" section and distance display
 
 ### Remove
-N/A — new project
+- Nothing removed — backward compatible
 
 ## Implementation Plan
-
-### Backend (Motoko)
-- `TrackingSession` type: `{ id: Text; createdBy: Text; location: ?Location; isActive: Bool; createdAt: Int; expiresAt: Int }`
-- `Location` type: `{ lat: Float; lng: Float; accuracy: Float; timestamp: Int }`
-- `createSession(phoneNumber: Text) → Text` — creates session, returns UUID
-- `submitLocation(sessionId: Text, lat: Float, lng: Float, accuracy: Float) → Bool` — stores location if session valid + active + not expired; sets consent flag
-- `getSession(sessionId: Text) → ?TrackingSession` — returns session data for dashboard polling
-- `deactivateSession(sessionId: Text) → Bool` — marks session inactive
-- Session expiry check inside getSession and submitLocation
-- UUID generation via timestamp + counter combination
-
-### Frontend Pages
-1. **Home** (`/`) — phone number input, telecom info card (operator, circle, format status), "Request Location" CTA
-2. **Request** (`/request`) — session created, shareable link displayed with copy button, link to dashboard
-3. **Consent** (`/track/:id`) — consent landing page with request message, Allow/Deny buttons, GPS capture logic
-4. **Dashboard** (`/dashboard/:id`) — Leaflet map, accuracy radius, last-updated time, polling every 5s
-5. **Privacy** (`/privacy`) — Terms & Privacy Policy page
-
-### Data
-- Static `telecom-prefixes.json` bundled in frontend (4-digit prefix → operator + circle)
-- Covers major Jio, Airtel, Vi, BSNL prefixes across all Indian circles
-- Loaded once at app start, cached in memory
+1. Add `requesterLocation` state (lat/lng | null) to DashboardPage
+2. Add `showMyLocationLoading` state for button feedback
+3. Add custom Leaflet icons: blueIcon (requester) and redIcon (target)
+4. Replace single `<Marker>` with conditional dual markers
+5. Add `<Polyline>` between the two markers when both exist
+6. Add `MapFitBounds` component that calls `map.fitBounds()` when both markers present
+7. Implement `getDistance()` Haversine function
+8. Add "Show My Location" button in info panel — only visible once target location is received
+9. Add distance display card in info panel
+10. Privacy: requester location stored only in component state, never sent to backend, never shown on consent page

@@ -2,9 +2,16 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Circle, MapContainer, Marker, TileLayer } from "react-leaflet";
+import {
+  Circle,
+  MapContainer,
+  Marker,
+  Polyline,
+  TileLayer,
+  useMap,
+} from "react-leaflet";
 import { useParams } from "react-router-dom";
-import type { TrackingSession } from "../backend";
+import { type SessionOutput, SessionStatus } from "../backend";
 import GlassCard from "../components/GlassCard";
 import Navbar from "../components/Navbar";
 import { useBackend } from "../hooks/useBackend";
@@ -19,6 +26,53 @@ const DefaultIcon = L.icon({
   iconAnchor: [12, 41],
 });
 L.Marker.prototype.options.icon = DefaultIcon;
+
+// Red icon for target
+const redIcon = L.icon({
+  iconUrl:
+    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+});
+
+// Blue icon for requester
+const blueIcon = L.icon({
+  iconUrl:
+    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+});
+
+function getDistance(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function MapFitBounds({ positions }: { positions: [number, number][] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (positions.length >= 2) {
+      map.fitBounds(positions, { padding: [40, 40] });
+    }
+  }, [positions, map]);
+  return null;
+}
 
 function formatTimestamp(ts: bigint): string {
   try {
@@ -36,10 +90,66 @@ function formatTimestamp(ts: bigint): string {
   }
 }
 
+function formatTimeOnly(ts: bigint): string {
+  try {
+    const ms = Number(ts) / 1_000_000;
+    return new Date(ms).toLocaleTimeString("en-IN", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "Unknown";
+  }
+}
+
+function StatusBadge({ status }: { status: SessionStatus }) {
+  const config = {
+    [SessionStatus.pending]: {
+      bg: "rgba(234,179,8,0.12)",
+      color: "#FDE047",
+      border: "1px solid rgba(234,179,8,0.35)",
+      dot: "#FDE047",
+      label: "Waiting for Response",
+    },
+    [SessionStatus.completed]: {
+      bg: "rgba(34,197,94,0.12)",
+      color: "#86EFAC",
+      border: "1px solid rgba(34,197,94,0.35)",
+      dot: "#86EFAC",
+      label: "Location Received",
+    },
+    [SessionStatus.expired]: {
+      bg: "rgba(239,68,68,0.12)",
+      color: "#FCA5A5",
+      border: "1px solid rgba(239,68,68,0.35)",
+      dot: "#FCA5A5",
+      label: "Session Expired",
+    },
+  };
+  const s = config[status];
+
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold"
+      style={{ background: s.bg, color: s.color, border: s.border }}
+    >
+      <motion.span
+        className="h-2 w-2 rounded-full"
+        style={{ background: s.dot }}
+        animate={
+          status === SessionStatus.pending ? { opacity: [1, 0.3, 1] } : {}
+        }
+        transition={{ duration: 1.5, repeat: Number.POSITIVE_INFINITY }}
+      />
+      {s.label}
+    </span>
+  );
+}
+
 export default function DashboardPage() {
   const { id } = useParams<{ id: string }>();
   const { actor, isFetching } = useBackend();
-  const [session, setSession] = useState<TrackingSession | null>(null);
+  const [session, setSession] = useState<SessionOutput | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [secondsAgo, setSecondsAgo] = useState(0);
@@ -48,12 +158,25 @@ export default function DashboardPage() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastRefreshRef = useRef(Date.now());
 
+  // Requester location state
+  const [requesterLocation, setRequesterLocation] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [myLocLoading, setMyLocLoading] = useState(false);
+  const [myLocError, setMyLocError] = useState<string | null>(null);
+
   const fetchSession = useCallback(async () => {
     if (!id || !actor) return;
     try {
       const data = await actor.getSession(id);
-      setSession(data);
-      if (!data) setError("Session not found.");
+      if (data === null) {
+        setError("Session not found.");
+        setSession(null);
+      } else {
+        setSession(data);
+        setError(null);
+      }
     } catch {
       setError("Failed to fetch session.");
     } finally {
@@ -80,14 +203,55 @@ export default function DashboardPage() {
     if (!id || !actor) return;
     setStopping(true);
     try {
-      await actor.deactivateSession(id);
+      await actor.expireSession(id);
       await fetchSession();
     } finally {
       setStopping(false);
     }
   }
 
+  function handleShowMyLocation() {
+    setMyLocLoading(true);
+    setMyLocError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setRequesterLocation({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        });
+        setMyLocLoading(false);
+      },
+      () => {
+        setMyLocError(
+          "Could not get your location. Please allow location access.",
+        );
+        setMyLocLoading(false);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    );
+  }
+
   const loc = session?.location;
+  const isActive = session?.status === SessionStatus.pending;
+
+  // Compute midpoint and bounds positions for dual-marker map
+  const bothPositions: [number, number][] =
+    loc && requesterLocation
+      ? [
+          [loc.lat, loc.lng],
+          [requesterLocation.lat, requesterLocation.lng],
+        ]
+      : [];
+
+  const mapCenter: [number, number] =
+    loc && requesterLocation
+      ? [
+          (loc.lat + requesterLocation.lat) / 2,
+          (loc.lng + requesterLocation.lng) / 2,
+        ]
+      : loc
+        ? [loc.lat, loc.lng]
+        : [20.5937, 78.9629]; // India center fallback
 
   return (
     <div className="min-h-screen" style={{ background: "#0B1220" }}>
@@ -114,7 +278,7 @@ export default function DashboardPage() {
               <span className="text-xs" style={{ color: "#9AA9BC" }}>
                 Last refreshed {secondsAgo}s ago
               </span>
-              {session?.isActive && (
+              {isActive && (
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.97 }}
@@ -182,30 +346,80 @@ export default function DashboardPage() {
                 <div className="lg:col-span-3">
                   <GlassCard className="overflow-hidden !p-0">
                     {loc ? (
-                      <div className="h-[420px] w-full">
-                        <MapContainer
-                          center={[loc.lat, loc.lng]}
-                          zoom={13}
-                          style={{ height: "100%", width: "100%" }}
-                          className="z-0"
-                        >
-                          <TileLayer
-                            attribution='&copy; <a href="https://carto.com">CARTO</a>'
-                            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                          />
-                          <Marker position={[loc.lat, loc.lng]} />
-                          <Circle
-                            center={[loc.lat, loc.lng]}
-                            radius={loc.accuracy}
-                            pathOptions={{
-                              color: "#22D3EE",
-                              fillColor: "#22D3EE",
-                              fillOpacity: 0.15,
-                              weight: 1.5,
-                            }}
-                          />
-                        </MapContainer>
-                      </div>
+                      <>
+                        <div className="h-[420px] w-full">
+                          <MapContainer
+                            center={mapCenter}
+                            zoom={bothPositions.length >= 2 ? 11 : 13}
+                            style={{ height: "100%", width: "100%" }}
+                            className="z-0"
+                          >
+                            <TileLayer
+                              attribution='&copy; <a href="https://carto.com">CARTO</a>'
+                              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                            />
+                            {/* Target marker (Red) */}
+                            <Marker
+                              position={[loc.lat, loc.lng]}
+                              icon={redIcon}
+                            />
+                            <Circle
+                              center={[loc.lat, loc.lng]}
+                              radius={loc.accuracy}
+                              pathOptions={{
+                                color: "#22D3EE",
+                                fillColor: "#22D3EE",
+                                fillOpacity: 0.15,
+                                weight: 1.5,
+                              }}
+                            />
+                            {/* Requester marker (Blue) + Polyline */}
+                            {requesterLocation && (
+                              <>
+                                <Marker
+                                  position={[
+                                    requesterLocation.lat,
+                                    requesterLocation.lng,
+                                  ]}
+                                  icon={blueIcon}
+                                />
+                                <Polyline
+                                  positions={[
+                                    [loc.lat, loc.lng],
+                                    [
+                                      requesterLocation.lat,
+                                      requesterLocation.lng,
+                                    ],
+                                  ]}
+                                  pathOptions={{
+                                    color: "#22D3EE",
+                                    weight: 1.5,
+                                    dashArray: "6, 6",
+                                    opacity: 0.7,
+                                  }}
+                                />
+                                <MapFitBounds positions={bothPositions} />
+                              </>
+                            )}
+                          </MapContainer>
+                        </div>
+                        {/* Map legend */}
+                        {loc && requesterLocation && (
+                          <div
+                            className="flex items-center gap-4 px-4 py-2 text-xs"
+                            style={{ color: "#9AA9BC" }}
+                          >
+                            <span>
+                              <span style={{ color: "#3B82F6" }}>●</span> Your
+                              Location
+                            </span>
+                            <span>
+                              <span style={{ color: "#EF4444" }}>●</span> Target
+                              Location
+                            </span>
+                          </div>
+                        )}
+                      </>
                     ) : (
                       <div
                         className="flex h-[420px] flex-col items-center justify-center"
@@ -229,13 +443,17 @@ export default function DashboardPage() {
                           📍
                         </motion.div>
                         <p className="font-medium" style={{ color: "#EAF2FF" }}>
-                          Waiting for consent…
+                          {session.status === SessionStatus.pending
+                            ? "Waiting for user response…"
+                            : "No location data"}
                         </p>
                         <p
                           className="mt-1 text-xs"
                           style={{ color: "#9AA9BC" }}
                         >
-                          Location will appear once the recipient approves
+                          {session.status === SessionStatus.pending
+                            ? "Location will appear once the recipient approves"
+                            : "Session has ended"}
                         </p>
                       </div>
                     )}
@@ -255,49 +473,7 @@ export default function DashboardPage() {
                     <div className="space-y-3">
                       <InfoRow
                         label="Status"
-                        value={
-                          <span
-                            className="rounded-full px-2.5 py-0.5 text-xs font-semibold"
-                            style={
-                              session.isActive
-                                ? {
-                                    background: "rgba(34,197,94,0.15)",
-                                    color: "#86EFAC",
-                                    border: "1px solid rgba(34,197,94,0.3)",
-                                  }
-                                : {
-                                    background: "rgba(239,68,68,0.15)",
-                                    color: "#FCA5A5",
-                                    border: "1px solid rgba(239,68,68,0.3)",
-                                  }
-                            }
-                          >
-                            {session.isActive ? "Active" : "Inactive"}
-                          </span>
-                        }
-                      />
-                      <InfoRow
-                        label="Consent"
-                        value={
-                          <span
-                            className="rounded-full px-2.5 py-0.5 text-xs font-semibold"
-                            style={
-                              session.consentGiven
-                                ? {
-                                    background: "rgba(34,211,238,0.1)",
-                                    color: "#22D3EE",
-                                    border: "1px solid rgba(34,211,238,0.3)",
-                                  }
-                                : {
-                                    background: "rgba(234,179,8,0.1)",
-                                    color: "#FDE047",
-                                    border: "1px solid rgba(234,179,8,0.3)",
-                                  }
-                            }
-                          >
-                            {session.consentGiven ? "Given" : "Pending"}
-                          </span>
-                        }
+                        value={<StatusBadge status={session.status} />}
                       />
                       <InfoRow
                         label="Phone"
@@ -307,7 +483,68 @@ export default function DashboardPage() {
                           </span>
                         }
                       />
+                      <InfoRow
+                        label="Requester"
+                        value={
+                          <span
+                            className="font-medium"
+                            style={{ color: "#22D3EE" }}
+                          >
+                            {session.requesterName}
+                          </span>
+                        }
+                      />
+                      <InfoRow
+                        label="Reason"
+                        value={
+                          <span
+                            className="text-right text-xs"
+                            style={{ color: "#EAF2FF" }}
+                          >
+                            {session.reason}
+                          </span>
+                        }
+                      />
+                      {session.status === SessionStatus.completed && loc && (
+                        <InfoRow
+                          label="Received At"
+                          value={
+                            <span
+                              className="font-medium"
+                              style={{ color: "#86EFAC" }}
+                            >
+                              {formatTimeOnly(loc.timestamp)}
+                            </span>
+                          }
+                        />
+                      )}
                     </div>
+
+                    {/* Show My Location button — only when target location exists and requester hasn't shared yet */}
+                    {loc && !requesterLocation && (
+                      <motion.button
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={handleShowMyLocation}
+                        disabled={myLocLoading}
+                        className="mt-3 w-full rounded-full py-2.5 text-sm font-semibold transition-colors"
+                        style={{
+                          background: "rgba(59,130,246,0.15)",
+                          border: "1px solid rgba(59,130,246,0.4)",
+                          color: "#93C5FD",
+                        }}
+                        data-ocid="dashboard.primary_button"
+                      >
+                        {myLocLoading
+                          ? "📍 Getting location…"
+                          : "📍 Show My Location"}
+                      </motion.button>
+                    )}
+                    {myLocError && (
+                      <p className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>
+                        {myLocError}
+                      </p>
+                    )}
                   </GlassCard>
 
                   {/* Location data */}
@@ -348,10 +585,7 @@ export default function DashboardPage() {
                           label="Last Updated"
                           value={
                             <span
-                              style={{
-                                color: "#EAF2FF",
-                                fontSize: "11px",
-                              }}
+                              style={{ color: "#EAF2FF", fontSize: "11px" }}
                             >
                               {formatTimestamp(loc.timestamp)}
                             </span>
@@ -359,11 +593,73 @@ export default function DashboardPage() {
                         />
                       </div>
                     ) : (
-                      <p className="text-sm" style={{ color: "#9AA9BC" }}>
-                        No location data yet.
-                      </p>
+                      <div>
+                        {session.status === SessionStatus.pending ? (
+                          <div className="flex items-center gap-2">
+                            <motion.div
+                              className="h-2 w-2 rounded-full"
+                              style={{ background: "#FDE047" }}
+                              animate={{ opacity: [1, 0.3, 1] }}
+                              transition={{
+                                duration: 1.5,
+                                repeat: Number.POSITIVE_INFINITY,
+                              }}
+                            />
+                            <p className="text-sm" style={{ color: "#9AA9BC" }}>
+                              Waiting for user response…
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-sm" style={{ color: "#9AA9BC" }}>
+                            No location data.
+                          </p>
+                        )}
+                      </div>
                     )}
                   </GlassCard>
+
+                  {/* Distance card — shown only when both locations exist */}
+                  {loc && requesterLocation && (
+                    <GlassCard>
+                      <h3
+                        className="mb-2 text-xs font-semibold uppercase tracking-wider"
+                        style={{ color: "#9AA9BC" }}
+                      >
+                        Distance
+                      </h3>
+                      <div className="flex items-center gap-3">
+                        <span className="text-2xl">📏</span>
+                        <div>
+                          <p
+                            className="text-lg font-bold"
+                            style={{ color: "#22D3EE" }}
+                          >
+                            {getDistance(
+                              requesterLocation.lat,
+                              requesterLocation.lng,
+                              loc.lat,
+                              loc.lng,
+                            ).toFixed(1)}{" "}
+                            km
+                          </p>
+                          <p className="text-xs" style={{ color: "#9AA9BC" }}>
+                            Straight-line distance
+                          </p>
+                        </div>
+                      </div>
+                      <div
+                        className="mt-2 flex items-center gap-4 text-xs"
+                        style={{ color: "#9AA9BC" }}
+                      >
+                        <span>
+                          <span style={{ color: "#3B82F6" }}>●</span> You
+                        </span>
+                        <span>
+                          <span style={{ color: "#EF4444" }}>●</span> Target
+                        </span>
+                      </div>
+                    </GlassCard>
+                  )}
 
                   {/* Refresh indicator */}
                   <GlassCard>
@@ -389,7 +685,6 @@ export default function DashboardPage() {
         </motion.div>
       </main>
 
-      {/* Footer */}
       <footer
         className="mt-12 border-t border-white/5 py-8 text-center text-xs"
         style={{ color: "#9AA9BC" }}
@@ -420,7 +715,7 @@ function InfoRow({
       <span className="flex-shrink-0 text-xs" style={{ color: "#9AA9BC" }}>
         {label}
       </span>
-      <span className="text-right text-sm">{value}</span>
+      <span className="max-w-[60%] text-right text-sm">{value}</span>
     </div>
   );
 }

@@ -5,6 +5,8 @@ import Runtime "mo:core/Runtime";
 import Int "mo:core/Int";
 import Iter "mo:core/Iter";
 
+
+
 actor {
   type Location = {
     lat : Float;
@@ -13,50 +15,54 @@ actor {
     timestamp : Int;
   };
 
-  type TrackingSession = {
+  type SessionStatus = {
+    #pending;
+    #completed;
+    #expired;
+  };
+
+  type SessionOutput = {
     id : Text;
     phoneNumber : Text;
+    requesterName : Text;
+    reason : Text;
     location : ?Location;
-    isActive : Bool;
-    consentGiven : Bool;
+    status : SessionStatus;
     createdAt : Int;
     expiresAt : Int;
   };
 
-  module TrackingSession {
-    public func compareByCreatedAt(session1 : TrackingSession, session2 : TrackingSession) : { #less; #equal; #greater } {
+  type SessionRaw = {
+    id : Text;
+    phoneNumber : Text;
+    requesterName : Text;
+    reason : Text;
+    location : ?Location;
+    createdAt : Int;
+    expiresAt : Int;
+  };
+
+  module SessionOutput {
+    public func compareByCreatedAt(session1 : SessionOutput, session2 : SessionOutput) : { #less; #equal; #greater } {
       Int.compare(session1.createdAt, session2.createdAt);
     };
   };
 
-  let sessions = Map.empty<Text, TrackingSession>();
+  let sessions = Map.empty<Text, SessionRaw>();
   var counter = 0;
 
-  func generateId() : Text {
-    let timestamp = Time.now();
-    let id = timestamp.toText() # "_" # counter.toText();
+  public shared ({ caller }) func createSession(phoneNumber : Text, requesterName : Text, reason : Text) : async Text {
+    let id = Time.now().toText() # "_" # counter.toText();
     counter += 1;
-    id;
-  };
 
-  func filterActive(session : TrackingSession) : Bool {
-    let now = Time.now();
-    session.isActive and now < session.expiresAt;
-  };
-
-  public shared ({ caller }) func createSession(phoneNumber : Text) : async Text {
-    let id = generateId();
-    let now = Time.now();
-    let expiresAt = now + 1_800_000_000_000; // 30 minutes in nanoseconds
-
-    let session : TrackingSession = {
+    let session : SessionRaw = {
       id;
       phoneNumber;
+      requesterName;
+      reason;
       location = null;
-      isActive = true;
-      consentGiven = false;
-      createdAt = now;
-      expiresAt;
+      createdAt = Time.now();
+      expiresAt = Time.now() + 1_800_000_000_000; // 30 minutes
     };
 
     sessions.add(id, session);
@@ -67,63 +73,56 @@ actor {
     switch (sessions.get(sessionId)) {
       case (null) { Runtime.trap("Session not found") };
       case (?session) {
-        let now = Time.now();
-        if (not session.isActive) { Runtime.trap("Session is not active") };
-        if (session.consentGiven) { Runtime.trap("Consent already given") };
-        if (now > session.expiresAt) {
-          let updatedSession = { session with isActive = false };
-          sessions.add(sessionId, updatedSession);
-          Runtime.trap("Session expired");
-        };
+        if (Time.now() > session.expiresAt) { Runtime.trap("Session expired") };
+        if (session.location != null) { Runtime.trap("Location already submitted") };
 
         let location : Location = {
           lat;
           lng;
           accuracy;
-          timestamp = now;
+          timestamp = Time.now();
         };
 
-        let updatedSession = {
-          session with
-          location = ?location;
-          consentGiven = true;
-        };
-
+        let updatedSession = { session with location = ?location };
         sessions.add(sessionId, updatedSession);
         true;
       };
     };
   };
 
-  public query ({ caller }) func getSession(sessionId : Text) : async ?TrackingSession {
+  func toSessionOutput(session : SessionRaw) : SessionOutput {
+    let status = switch (session.location, Time.now() > session.expiresAt) {
+      case (?_, true) { #expired };
+      case (null, false) { #pending };
+      case (?_, false) { #completed };
+    };
+    { session with status };
+  };
+
+  public query ({ caller }) func getSession(sessionId : Text) : async ?SessionOutput {
     switch (sessions.get(sessionId)) {
       case (null) { null };
       case (?session) {
-        let now = Time.now();
-        if (now > session.expiresAt and session.isActive) {
-          let updatedSession = { session with isActive = false };
-          sessions.add(sessionId, updatedSession);
-          ?updatedSession;
-        } else {
-          ?session;
-        };
+        ?toSessionOutput(session);
       };
     };
   };
 
-  public shared ({ caller }) func deactivateSession(sessionId : Text) : async Bool {
+  public query ({ caller }) func getAllSessions() : async [SessionOutput] {
+    sessions.values().toArray().map(toSessionOutput).sort(SessionOutput.compareByCreatedAt);
+  };
+
+  public shared ({ caller }) func expireSession(sessionId : Text) : async Bool {
     switch (sessions.get(sessionId)) {
       case (null) { Runtime.trap("Session not found") };
       case (?session) {
-        if (not session.isActive) { Runtime.trap("Session already inactive") };
-        let updatedSession = { session with isActive = false };
+        if (Time.now() > session.expiresAt) {
+          Runtime.trap("Session already expired");
+        };
+        let updatedSession = { session with expiresAt = Time.now() };
         sessions.add(sessionId, updatedSession);
         true;
       };
     };
-  };
-
-  public query ({ caller }) func getActiveSessions() : async [TrackingSession] {
-    sessions.values().toArray().filter(filterActive).sort(TrackingSession.compareByCreatedAt);
   };
 };

@@ -1,25 +1,70 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
+import { type SessionOutput, SessionStatus } from "../backend";
 import GlassCard from "../components/GlassCard";
 import { useBackend } from "../hooks/useBackend";
 
 type PageState =
   | "loading"
-  | "actor-loading"
   | "not-found"
   | "expired"
-  | "consent-given"
-  | "denied"
+  | "completed"
   | "ready"
   | "sharing"
   | "shared"
+  | "denied"
   | "geo-error";
+
+function TrustChecklist() {
+  const items = [
+    "Your location will be accessed once only",
+    "Data is stored for max 30 minutes then deleted",
+    "No continuous background tracking",
+    "You can deny this request at any time",
+  ];
+
+  return (
+    <div
+      className="rounded-xl p-4"
+      style={{
+        background: "rgba(34,211,238,0.05)",
+        border: "1px solid rgba(34,211,238,0.15)",
+      }}
+    >
+      <div className="space-y-2">
+        {items.map((item, i) => (
+          <motion.div
+            key={item}
+            initial={{ opacity: 0, x: -12 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.1 + i * 0.07 }}
+            className="flex items-start gap-2.5"
+          >
+            <span
+              className="mt-0.5 flex-shrink-0 text-sm"
+              style={{ color: "#22D3EE" }}
+            >
+              ✔
+            </span>
+            <span
+              className="text-xs leading-relaxed"
+              style={{ color: "#9AA9BC" }}
+            >
+              {item}
+            </span>
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function ConsentPage() {
   const { id } = useParams<{ id: string }>();
   const { actor, isFetching } = useBackend();
   const [state, setState] = useState<PageState>("loading");
+  const [session, setSession] = useState<SessionOutput | null>(null);
   const [geoError, setGeoError] = useState("");
 
   useEffect(() => {
@@ -31,28 +76,30 @@ export default function ConsentPage() {
       setState("loading");
       return;
     }
+
     let cancelled = false;
+
     async function checkSession() {
       try {
-        const session = await actor!.getSession(id!);
+        const s = await actor!.getSession(id!);
         if (cancelled) return;
-        if (!session) {
+        if (!s) {
           setState("not-found");
           return;
         }
-        if (!session.isActive) {
+        setSession(s);
+        if (s.status === SessionStatus.expired) {
           setState("expired");
-          return;
+        } else if (s.status === SessionStatus.completed) {
+          setState("completed");
+        } else {
+          setState("ready");
         }
-        if (session.consentGiven) {
-          setState("consent-given");
-          return;
-        }
-        setState("ready");
       } catch {
         if (!cancelled) setState("not-found");
       }
     }
+
     checkSession();
     return () => {
       cancelled = true;
@@ -64,29 +111,44 @@ export default function ConsentPage() {
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         try {
-          await actor!.submitLocation(
+          const result = await actor!.submitLocation(
             id!,
             pos.coords.latitude,
             pos.coords.longitude,
             pos.coords.accuracy,
           );
-          setState("shared");
-        } catch {
-          setGeoError("Failed to submit location. Please try again.");
+          if (result) {
+            setState("shared");
+          } else {
+            setGeoError(
+              "The server rejected the location submission. The session may have expired.",
+            );
+            setState("geo-error");
+          }
+        } catch (err) {
+          console.error("submitLocation error:", err);
+          setGeoError(
+            "Failed to submit location to the server. Please try again.",
+          );
           setState("geo-error");
         }
       },
       (err) => {
-        setGeoError(
-          err.code === 1
-            ? "Location access denied. Please allow location permission in your browser settings."
-            : err.code === 2
-              ? "Unable to determine your location. Please try again."
-              : "Location request timed out. Please try again.",
-        );
+        let msg = "An unknown error occurred while getting your location.";
+        if (err.code === 1) {
+          msg =
+            "Location access denied. Please allow location permission in your browser settings and try again.";
+        } else if (err.code === 2) {
+          msg =
+            "Unable to determine your location. Please check your GPS/network connection and try again.";
+        } else if (err.code === 3) {
+          msg =
+            "Location request timed out. Please try again in a better signal area.";
+        }
+        setGeoError(msg);
         setState("geo-error");
       },
-      { enableHighAccuracy: true, timeout: 10000 },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
     );
   }
 
@@ -101,6 +163,7 @@ export default function ConsentPage() {
     >
       <div className="w-full max-w-md">
         <AnimatePresence mode="wait">
+          {/* LOADING */}
           {state === "loading" && (
             <motion.div
               key="loading"
@@ -108,51 +171,80 @@ export default function ConsentPage() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
             >
-              <GlassCard className="text-center">
+              <GlassCard
+                className="text-center"
+                data-ocid="consent.loading_state"
+              >
                 <div
                   className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2"
                   style={{
                     borderColor: "rgba(34,211,238,0.2)",
                     borderTopColor: "#22D3EE",
                   }}
-                  data-ocid="consent.loading_state"
                 />
                 <p style={{ color: "#9AA9BC" }}>Verifying request…</p>
               </GlassCard>
             </motion.div>
           )}
 
-          {(state === "not-found" || state === "expired") && (
+          {/* NOT FOUND */}
+          {state === "not-found" && (
             <motion.div
-              key="error"
+              key="not-found"
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
             >
-              <GlassCard className="text-center">
-                <div className="mb-4 text-5xl" data-ocid="consent.error_state">
-                  {state === "expired" ? "⏰" : "🚫"}
-                </div>
+              <GlassCard
+                className="text-center"
+                data-ocid="consent.error_state"
+              >
+                <div className="mb-4 text-5xl">🚫</div>
                 <h2
                   className="mb-2 text-xl font-bold"
                   style={{ color: "#EAF2FF" }}
                 >
-                  {state === "expired"
-                    ? "Session Expired"
-                    : "Request Not Found"}
+                  Request Not Found
                 </h2>
                 <p className="text-sm" style={{ color: "#9AA9BC" }}>
-                  {state === "expired"
-                    ? "This tracking session has expired or been deactivated. Please ask for a new link."
-                    : "This location request could not be found. The link may be invalid or already used."}
+                  This location request could not be found. The link may be
+                  invalid or already used.
                 </p>
               </GlassCard>
             </motion.div>
           )}
 
-          {state === "consent-given" && (
+          {/* EXPIRED */}
+          {state === "expired" && (
             <motion.div
-              key="already"
+              key="expired"
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+            >
+              <GlassCard
+                className="text-center"
+                data-ocid="consent.error_state"
+              >
+                <div className="mb-4 text-5xl">⏰</div>
+                <h2
+                  className="mb-2 text-xl font-bold"
+                  style={{ color: "#EAF2FF" }}
+                >
+                  Session Expired
+                </h2>
+                <p className="text-sm" style={{ color: "#9AA9BC" }}>
+                  This tracking session has expired or been deactivated. Please
+                  ask for a new link.
+                </p>
+              </GlassCard>
+            </motion.div>
+          )}
+
+          {/* COMPLETED */}
+          {state === "completed" && (
+            <motion.div
+              key="completed"
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
@@ -167,11 +259,13 @@ export default function ConsentPage() {
                 </h2>
                 <p className="text-sm" style={{ color: "#9AA9BC" }}>
                   Your location has already been submitted for this request.
+                  This link is now inactive.
                 </p>
               </GlassCard>
             </motion.div>
           )}
 
+          {/* READY — Main consent form */}
           {state === "ready" && (
             <motion.div
               key="ready"
@@ -180,31 +274,59 @@ export default function ConsentPage() {
               exit={{ opacity: 0 }}
             >
               <GlassCard>
-                <div className="mb-6 text-center">
-                  <div
-                    className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full text-3xl"
+                {/* Secure label */}
+                <div className="mb-5 flex items-center justify-center">
+                  <span
+                    className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold"
                     style={{
                       background: "rgba(34,211,238,0.1)",
-                      border: "1px solid rgba(34,211,238,0.3)",
+                      border: "1px solid rgba(34,211,238,0.25)",
+                      color: "#22D3EE",
                     }}
                   >
-                    📍
-                  </div>
-                  <h2
-                    className="mb-3 text-2xl font-bold"
-                    style={{ color: "#EAF2FF" }}
-                  >
-                    Location Request
-                  </h2>
-                  <p
-                    className="text-sm leading-relaxed"
-                    style={{ color: "#9AA9BC" }}
-                  >
-                    Someone has requested your location for tracking purposes.
-                    You have the right to approve or deny this request.
-                  </p>
+                    🛡️ Secure & Consent-Based
+                  </span>
                 </div>
 
+                {/* Requester info — transparent */}
+                {session && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                    className="mb-5 rounded-xl p-4 text-center"
+                    style={{
+                      background: "rgba(18,28,44,0.8)",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                    }}
+                  >
+                    <p
+                      className="mb-1 text-base font-bold"
+                      style={{ color: "#EAF2FF" }}
+                    >
+                      <span style={{ color: "#22D3EE" }}>
+                        {session.requesterName}
+                      </span>{" "}
+                      has requested your location
+                    </p>
+                    <p className="text-sm" style={{ color: "#9AA9BC" }}>
+                      Reason:{" "}
+                      <span
+                        className="font-medium"
+                        style={{ color: "#EAF2FF" }}
+                      >
+                        {session.reason}
+                      </span>
+                    </p>
+                  </motion.div>
+                )}
+
+                {/* Trust checklist */}
+                <div className="mb-5">
+                  <TrustChecklist />
+                </div>
+
+                {/* Action buttons */}
                 <div className="space-y-3">
                   <motion.button
                     whileHover={{ scale: 1.02 }}
@@ -213,7 +335,7 @@ export default function ConsentPage() {
                     className="cyan-btn neon-glow w-full py-3.5 text-sm font-bold"
                     data-ocid="consent.confirm_button"
                   >
-                    Allow Location Access
+                    ✅ Allow Location Access
                   </motion.button>
                   <motion.button
                     whileHover={{ scale: 1.02 }}
@@ -230,26 +352,21 @@ export default function ConsentPage() {
                   </motion.button>
                 </div>
 
-                <div
-                  className="mt-6 rounded-xl p-4"
-                  style={{
-                    background: "rgba(34,211,238,0.04)",
-                    border: "1px solid rgba(34,211,238,0.15)",
-                  }}
+                {/* Privacy note */}
+                <p
+                  className="mt-4 text-center text-xs"
+                  style={{ color: "#9AA9BC" }}
                 >
-                  <p
-                    className="text-xs leading-relaxed"
-                    style={{ color: "#9AA9BC" }}
-                  >
-                    🔒 Your location data is stored temporarily (30 minutes) and
-                    will be automatically deleted. This system complies with
-                    India DPDP Act 2023 and global privacy standards.
-                  </p>
-                </div>
+                  Compliant with India DPDP Act 2023 ·{" "}
+                  <a href="/privacy" className="underline hover:text-[#22D3EE]">
+                    Privacy Policy
+                  </a>
+                </p>
               </GlassCard>
             </motion.div>
           )}
 
+          {/* SHARING */}
           {state === "sharing" && (
             <motion.div
               key="sharing"
@@ -270,12 +387,13 @@ export default function ConsentPage() {
                 />
                 <p style={{ color: "#EAF2FF" }}>Getting your location…</p>
                 <p className="mt-1 text-xs" style={{ color: "#9AA9BC" }}>
-                  Please allow location access in your browser.
+                  Please allow location access in your browser if prompted.
                 </p>
               </GlassCard>
             </motion.div>
           )}
 
+          {/* SHARED */}
           {state === "shared" && (
             <motion.div
               key="shared"
@@ -287,20 +405,38 @@ export default function ConsentPage() {
                 className="text-center"
                 data-ocid="consent.success_state"
               >
-                <div className="mb-4 text-5xl">🎉</div>
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                  className="mb-4 text-5xl"
+                >
+                  🎉
+                </motion.div>
                 <h2
                   className="mb-2 text-xl font-bold"
                   style={{ color: "#22D3EE" }}
                 >
                   Location Shared Successfully
                 </h2>
-                <p className="text-sm" style={{ color: "#9AA9BC" }}>
+                <p className="mb-4 text-sm" style={{ color: "#9AA9BC" }}>
                   Your location has been shared. You may safely close this page.
                 </p>
+                <div
+                  className="rounded-xl p-3 text-xs"
+                  style={{
+                    background: "rgba(34,197,94,0.08)",
+                    border: "1px solid rgba(34,197,94,0.2)",
+                    color: "#86EFAC",
+                  }}
+                >
+                  ✔ Data will be automatically deleted after 30 minutes
+                </div>
               </GlassCard>
             </motion.div>
           )}
 
+          {/* DENIED */}
           {state === "denied" && (
             <motion.div
               key="denied"
@@ -317,12 +453,14 @@ export default function ConsentPage() {
                   Request Denied
                 </h2>
                 <p className="text-sm" style={{ color: "#9AA9BC" }}>
-                  You have denied the location request. You can close this page.
+                  You have denied the location request. You can safely close
+                  this page.
                 </p>
               </GlassCard>
             </motion.div>
           )}
 
+          {/* GEO ERROR */}
           {state === "geo-error" && (
             <motion.div
               key="geo-error"
@@ -340,13 +478,27 @@ export default function ConsentPage() {
                     Location Error
                   </h2>
                 </div>
-                <p className="mb-4 text-sm" style={{ color: "#9AA9BC" }}>
+                <p
+                  className="mb-5 text-sm leading-relaxed"
+                  style={{ color: "#9AA9BC" }}
+                >
                   {geoError}
                 </p>
+                <div
+                  className="mb-4 rounded-xl p-3 text-xs"
+                  style={{
+                    background: "rgba(239,68,68,0.08)",
+                    border: "1px solid rgba(239,68,68,0.2)",
+                    color: "#FCA5A5",
+                  }}
+                >
+                  💡 Tip: Check browser address bar → click the lock/info icon →
+                  allow Location.
+                </div>
                 <button
                   type="button"
                   onClick={() => setState("ready")}
-                  className="text-sm"
+                  className="text-sm font-medium"
                   style={{ color: "#22D3EE" }}
                 >
                   ← Try again

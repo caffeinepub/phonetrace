@@ -95,79 +95,85 @@ export interface Location {
     timestamp: bigint;
     accuracy: number;
 }
-export interface TrackingSession {
+export interface SessionOutput {
     id: string;
+    status: SessionStatus;
     expiresAt: bigint;
     createdAt: bigint;
-    isActive: boolean;
-    consentGiven: boolean;
+    requesterName: string;
     phoneNumber: string;
     location?: Location;
+    reason: string;
+}
+export enum SessionStatus {
+    expired = "expired",
+    pending = "pending",
+    completed = "completed"
 }
 export interface backendInterface {
-    createSession(phoneNumber: string): Promise<string>;
-    deactivateSession(sessionId: string): Promise<boolean>;
-    getActiveSessions(): Promise<Array<TrackingSession>>;
-    getSession(sessionId: string): Promise<TrackingSession | null>;
+    createSession(phoneNumber: string, requesterName: string, reason: string): Promise<string>;
+    expireSession(sessionId: string): Promise<boolean>;
+    getAllSessions(): Promise<Array<SessionOutput>>;
+    getSession(sessionId: string): Promise<SessionOutput | null>;
     submitLocation(sessionId: string, lat: number, lng: number, accuracy: number): Promise<boolean>;
 }
-import type { Location as _Location, TrackingSession as _TrackingSession } from "./declarations/backend.did.d.ts";
+import type { Location as _Location, SessionOutput as _SessionOutput, SessionStatus as _SessionStatus } from "./declarations/backend.did.d.ts";
 export class Backend implements backendInterface {
     constructor(private actor: ActorSubclass<_SERVICE>, private _uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, private _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, private processError?: (error: unknown) => never){}
-    async createSession(arg0: string): Promise<string> {
+    async createSession(arg0: string, arg1: string, arg2: string): Promise<string> {
         if (this.processError) {
             try {
-                const result = await this.actor.createSession(arg0);
+                const result = await this.actor.createSession(arg0, arg1, arg2);
                 return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.createSession(arg0);
+            const result = await this.actor.createSession(arg0, arg1, arg2);
             return result;
         }
     }
-    async deactivateSession(arg0: string): Promise<boolean> {
+    async expireSession(arg0: string): Promise<boolean> {
         if (this.processError) {
             try {
-                const result = await this.actor.deactivateSession(arg0);
+                const result = await this.actor.expireSession(arg0);
                 return result;
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.deactivateSession(arg0);
+            const result = await this.actor.expireSession(arg0);
             return result;
         }
     }
-    async getActiveSessions(): Promise<Array<TrackingSession>> {
+    async getAllSessions(): Promise<Array<SessionOutput>> {
         if (this.processError) {
             try {
-                const result = await this.actor.getActiveSessions();
+                const result = await this.actor.getAllSessions();
                 return from_candid_vec_n1(this._uploadFile, this._downloadFile, result);
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
-            const result = await this.actor.getActiveSessions();
+            const result = await this.actor.getAllSessions();
             return from_candid_vec_n1(this._uploadFile, this._downloadFile, result);
         }
     }
-    async getSession(arg0: string): Promise<TrackingSession | null> {
+    async getSession(arg0: string): Promise<SessionOutput | null> {
         if (this.processError) {
             try {
                 const result = await this.actor.getSession(arg0);
-                return from_candid_opt_n5(this._uploadFile, this._downloadFile, result);
+                return from_candid_opt_n7(this._uploadFile, this._downloadFile, result);
             } catch (e) {
                 this.processError(e);
                 throw new Error("unreachable");
             }
         } else {
             const result = await this.actor.getSession(arg0);
-            return from_candid_opt_n5(this._uploadFile, this._downloadFile, result);
+            return from_candid_opt_n7(this._uploadFile, this._downloadFile, result);
         }
     }
     async submitLocation(arg0: string, arg1: number, arg2: number, arg3: number): Promise<boolean> {
@@ -185,44 +191,59 @@ export class Backend implements backendInterface {
         }
     }
 }
-function from_candid_TrackingSession_n2(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: _TrackingSession): TrackingSession {
+function from_candid_SessionOutput_n2(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: _SessionOutput): SessionOutput {
     return from_candid_record_n3(_uploadFile, _downloadFile, value);
 }
-function from_candid_opt_n4(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: [] | [_Location]): Location | null {
+function from_candid_SessionStatus_n4(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: _SessionStatus): SessionStatus {
+    return from_candid_variant_n5(_uploadFile, _downloadFile, value);
+}
+function from_candid_opt_n6(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: [] | [_Location]): Location | null {
     return value.length === 0 ? null : value[0];
 }
-function from_candid_opt_n5(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: [] | [_TrackingSession]): TrackingSession | null {
-    return value.length === 0 ? null : from_candid_TrackingSession_n2(_uploadFile, _downloadFile, value[0]);
+function from_candid_opt_n7(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: [] | [_SessionOutput]): SessionOutput | null {
+    return value.length === 0 ? null : from_candid_SessionOutput_n2(_uploadFile, _downloadFile, value[0]);
 }
 function from_candid_record_n3(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {
     id: string;
+    status: _SessionStatus;
     expiresAt: bigint;
     createdAt: bigint;
-    isActive: boolean;
-    consentGiven: boolean;
+    requesterName: string;
     phoneNumber: string;
     location: [] | [_Location];
+    reason: string;
 }): {
     id: string;
+    status: SessionStatus;
     expiresAt: bigint;
     createdAt: bigint;
-    isActive: boolean;
-    consentGiven: boolean;
+    requesterName: string;
     phoneNumber: string;
     location?: Location;
+    reason: string;
 } {
     return {
         id: value.id,
+        status: from_candid_SessionStatus_n4(_uploadFile, _downloadFile, value.status),
         expiresAt: value.expiresAt,
         createdAt: value.createdAt,
-        isActive: value.isActive,
-        consentGiven: value.consentGiven,
+        requesterName: value.requesterName,
         phoneNumber: value.phoneNumber,
-        location: record_opt_to_undefined(from_candid_opt_n4(_uploadFile, _downloadFile, value.location))
+        location: record_opt_to_undefined(from_candid_opt_n6(_uploadFile, _downloadFile, value.location)),
+        reason: value.reason
     };
 }
-function from_candid_vec_n1(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: Array<_TrackingSession>): Array<TrackingSession> {
-    return value.map((x)=>from_candid_TrackingSession_n2(_uploadFile, _downloadFile, x));
+function from_candid_variant_n5(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: {
+    expired: null;
+} | {
+    pending: null;
+} | {
+    completed: null;
+}): SessionStatus {
+    return "expired" in value ? SessionStatus.expired : "pending" in value ? SessionStatus.pending : "completed" in value ? SessionStatus.completed : value;
+}
+function from_candid_vec_n1(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: Array<_SessionOutput>): Array<SessionOutput> {
+    return value.map((x)=>from_candid_SessionOutput_n2(_uploadFile, _downloadFile, x));
 }
 export interface CreateActorOptions {
     agent?: Agent;

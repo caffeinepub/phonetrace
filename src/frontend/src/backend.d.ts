@@ -13,19 +13,25 @@ export interface Location {
     timestamp: bigint;
     accuracy: number;
 }
-export interface TrackingSession {
+export interface SessionOutput {
     id: string;
+    status: SessionStatus;
     expiresAt: bigint;
     createdAt: bigint;
-    isActive: boolean;
-    consentGiven: boolean;
+    requesterName: string;
     phoneNumber: string;
     location?: Location;
+    reason: string;
+}
+export enum SessionStatus {
+    expired = "expired",
+    pending = "pending",
+    completed = "completed"
 }
 export interface backendInterface {
-    createSession(phoneNumber: string): Promise<string>;
-    deactivateSession(sessionId: string): Promise<boolean>;
-    getActiveSessions(): Promise<Array<TrackingSession>>;
-    getSession(sessionId: string): Promise<TrackingSession | null>;
+    createSession(phoneNumber: string, requesterName: string, reason: string): Promise<string>;
+    expireSession(sessionId: string): Promise<boolean>;
+    getAllSessions(): Promise<Array<SessionOutput>>;
+    getSession(sessionId: string): Promise<SessionOutput | null>;
     submitLocation(sessionId: string, lat: number, lng: number, accuracy: number): Promise<boolean>;
 }

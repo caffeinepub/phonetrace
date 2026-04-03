@@ -16,20 +16,24 @@ export interface Location {
   'timestamp' : bigint,
   'accuracy' : number,
 }
-export interface TrackingSession {
+export interface SessionOutput {
   'id' : string,
+  'status' : SessionStatus,
   'expiresAt' : bigint,
   'createdAt' : bigint,
-  'isActive' : boolean,
-  'consentGiven' : boolean,
+  'requesterName' : string,
   'phoneNumber' : string,
   'location' : [] | [Location],
+  'reason' : string,
 }
+export type SessionStatus = { 'expired' : null } |
+  { 'pending' : null } |
+  { 'completed' : null };
 export interface _SERVICE {
-  'createSession' : ActorMethod<[string], string>,
-  'deactivateSession' : ActorMethod<[string], boolean>,
-  'getActiveSessions' : ActorMethod<[], Array<TrackingSession>>,
-  'getSession' : ActorMethod<[string], [] | [TrackingSession]>,
+  'createSession' : ActorMethod<[string, string, string], string>,
+  'expireSession' : ActorMethod<[string], boolean>,
+  'getAllSessions' : ActorMethod<[], Array<SessionOutput>>,
+  'getSession' : ActorMethod<[string], [] | [SessionOutput]>,
   'submitLocation' : ActorMethod<[string, number, number, number], boolean>,
 }
 export declare const idlService: IDL.ServiceClass;
