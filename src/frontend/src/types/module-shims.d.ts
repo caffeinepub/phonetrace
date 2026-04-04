@@ -55,24 +55,8 @@ declare module "react-router-dom" {
   export const Outlet: ComponentType;
 }
 
-declare module "leaflet" {
-  export interface LatLngExpression extends Array<number> {}
-  export interface IconOptions {
-    iconUrl: string;
-    iconRetinaUrl?: string;
-    shadowUrl?: string;
-    iconSize?: [number, number];
-    iconAnchor?: [number, number];
-  }
-  export interface Icon {}
-  export function icon(options: IconOptions): Icon;
-  export const Marker: { prototype: { options: { icon: Icon | unknown } } };
-  const L: {
-    icon: typeof icon;
-    Marker: typeof Marker;
-  };
-  export default L;
-}
+// leaflet shim is intentionally empty — let @types/leaflet provide the full types
+// (the old shim was overriding @types/leaflet with an incomplete stub)
 
 declare module "react-leaflet" {
   import type { ComponentType, ReactNode } from "react";

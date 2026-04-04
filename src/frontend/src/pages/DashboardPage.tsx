@@ -1,49 +1,14 @@
-import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import L from "leaflet";
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Circle,
-  MapContainer,
-  Marker,
-  Polyline,
-  TileLayer,
-  useMap,
-} from "react-leaflet";
 import { useParams } from "react-router-dom";
 import { type SessionOutput, SessionStatus } from "../backend";
 import GlassCard from "../components/GlassCard";
 import Navbar from "../components/Navbar";
 import { useBackend } from "../hooks/useBackend";
 
-// Fix default Leaflet icon
-const DefaultIcon = L.icon({
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  iconRetinaUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
-L.Marker.prototype.options.icon = DefaultIcon;
-
-// Red icon for target
-const redIcon = L.icon({
-  iconUrl:
-    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
-
-// Blue icon for requester
-const blueIcon = L.icon({
-  iconUrl:
-    "https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
+const GOOGLE_MAPS_API_KEY = "AIzaSyBoYD4445obgpMIgANicCB0cqjnjTyLUpw";
 
 function getDistance(
   lat1: number,
@@ -62,16 +27,6 @@ function getDistance(
       Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
-}
-
-function MapFitBounds({ positions }: { positions: [number, number][] }) {
-  const map = useMap();
-  useEffect(() => {
-    if (positions.length >= 2) {
-      map.fitBounds(positions, { padding: [40, 40] });
-    }
-  }, [positions, map]);
-  return null;
 }
 
 function formatTimestamp(ts: bigint): string {
@@ -143,6 +98,371 @@ function StatusBadge({ status }: { status: SessionStatus }) {
       />
       {s.label}
     </span>
+  );
+}
+
+async function openStreetView(lat: number, lng: number) {
+  try {
+    const res = await fetch(
+      `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&key=${GOOGLE_MAPS_API_KEY}`,
+    );
+    const data = await res.json();
+    if (data.status === "OK") {
+      window.open(
+        `https://www.google.com/maps?q=&layer=c&cbll=${lat},${lng}`,
+        "_blank",
+      );
+    } else {
+      alert("Street View not available at this location");
+    }
+  } catch {
+    // fallback: always open
+    window.open(
+      `https://www.google.com/maps?q=&layer=c&cbll=${lat},${lng}`,
+      "_blank",
+    );
+  }
+}
+
+type MapMode = "map" | "satellite";
+
+interface MapPanelProps {
+  targetLoc: { lat: number; lng: number; accuracy: number } | null;
+  requesterLoc: { lat: number; lng: number } | null;
+}
+
+function MapPanel({ targetLoc, requesterLoc }: MapPanelProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const targetMarkerRef = useRef<L.CircleMarker | null>(null);
+  const requesterMarkerRef = useRef<L.CircleMarker | null>(null);
+  const polylineRef = useRef<L.Polyline | null>(null);
+  const osmLayerRef = useRef<L.TileLayer | null>(null);
+  const satelliteLayerRef = useRef<L.TileLayer | null>(null);
+  const labelsLayerRef = useRef<L.TileLayer | null>(null);
+  const currentModeRef = useRef<MapMode>("map");
+  // Capture initial targetLoc for map initialization (one-time only)
+  const initialTargetLocRef = useRef(targetLoc);
+  const [mapReady, setMapReady] = useState(false);
+  const [mapMode, setMapMode] = useState<MapMode>("map");
+  const [svLoading, setSvLoading] = useState(false);
+
+  // Initialise the Leaflet map once — uses initialTargetLocRef to avoid dep exhaustive lint
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return;
+
+    const initLoc = initialTargetLocRef.current;
+    const center: [number, number] = initLoc
+      ? [initLoc.lat, initLoc.lng]
+      : [20.5937, 78.9629];
+
+    const map = L.map(containerRef.current, {
+      center,
+      zoom: initLoc ? 13 : 5,
+      zoomControl: true,
+      attributionControl: true,
+    });
+
+    // OSM base layer
+    const osm = L.tileLayer(
+      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {
+        attribution: "\u00a9 OpenStreetMap contributors",
+        maxZoom: 19,
+      },
+    ).addTo(map);
+
+    // Esri satellite layer
+    const satellite = L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      {
+        attribution: "\u00a9 Esri",
+        maxZoom: 19,
+      },
+    );
+
+    // Esri reference labels overlay
+    const labels = L.tileLayer(
+      "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+      {
+        attribution: "",
+        maxZoom: 19,
+        pane: "overlayPane",
+      },
+    );
+
+    // Map click \u2192 Street View
+    map.on("click", (e: L.LeafletMouseEvent) => {
+      openStreetView(e.latlng.lat, e.latlng.lng);
+    });
+
+    osmLayerRef.current = osm;
+    satelliteLayerRef.current = satellite;
+    labelsLayerRef.current = labels;
+    mapRef.current = map;
+    setMapReady(true);
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      osmLayerRef.current = null;
+      satelliteLayerRef.current = null;
+      labelsLayerRef.current = null;
+      targetMarkerRef.current = null;
+      requesterMarkerRef.current = null;
+      polylineRef.current = null;
+    };
+  }, []);
+
+  // Sync markers + polyline whenever locations change
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+
+    // Target marker \u2014 Red circle
+    if (targetLoc) {
+      const pos: [number, number] = [targetLoc.lat, targetLoc.lng];
+      if (!targetMarkerRef.current) {
+        targetMarkerRef.current = L.circleMarker(pos, {
+          radius: 10,
+          fillColor: "#EF4444",
+          fillOpacity: 1,
+          color: "#fff",
+          weight: 2,
+        })
+          .addTo(map)
+          .bindPopup(
+            `<strong style="color:#111">\ud83d\udd34 Target</strong><br/><span style="font-size:11px;color:#444">${targetLoc.lat.toFixed(5)}, ${targetLoc.lng.toFixed(5)}<br/>Accuracy: ${targetLoc.accuracy.toFixed(0)}m</span>`,
+          );
+      } else {
+        targetMarkerRef.current.setLatLng(pos);
+      }
+    }
+
+    // Requester marker \u2014 Blue circle
+    if (requesterLoc) {
+      const pos: [number, number] = [requesterLoc.lat, requesterLoc.lng];
+      if (!requesterMarkerRef.current) {
+        requesterMarkerRef.current = L.circleMarker(pos, {
+          radius: 10,
+          fillColor: "#3B82F6",
+          fillOpacity: 1,
+          color: "#fff",
+          weight: 2,
+        })
+          .addTo(map)
+          .bindPopup(
+            `<strong style="color:#111">\ud83d\udd35 Your Location</strong><br/><span style="font-size:11px;color:#444">${requesterLoc.lat.toFixed(5)}, ${requesterLoc.lng.toFixed(5)}</span>`,
+          );
+      } else {
+        requesterMarkerRef.current.setLatLng(pos);
+      }
+    }
+
+    // Polyline (dashed cyan)
+    if (targetLoc && requesterLoc) {
+      const path: [number, number][] = [
+        [targetLoc.lat, targetLoc.lng],
+        [requesterLoc.lat, requesterLoc.lng],
+      ];
+      if (!polylineRef.current) {
+        polylineRef.current = L.polyline(path, {
+          color: "#22D3EE",
+          weight: 2,
+          opacity: 0.8,
+          dashArray: "6, 6",
+        }).addTo(map);
+      } else {
+        polylineRef.current.setLatLngs(path);
+      }
+
+      // Fit both markers into view
+      const bounds = L.latLngBounds(path);
+      map.fitBounds(bounds, { padding: [40, 40] });
+    } else if (targetLoc) {
+      map.setView([targetLoc.lat, targetLoc.lng], 15);
+    }
+  }, [mapReady, targetLoc, requesterLoc]);
+
+  // Handle layer toggle
+  function handleModeSwitch(mode: MapMode) {
+    if (
+      !mapRef.current ||
+      !osmLayerRef.current ||
+      !satelliteLayerRef.current ||
+      !labelsLayerRef.current
+    )
+      return;
+    if (mode === currentModeRef.current) return;
+    const map = mapRef.current;
+
+    if (mode === "satellite") {
+      map.removeLayer(osmLayerRef.current);
+      map.addLayer(satelliteLayerRef.current);
+      map.addLayer(labelsLayerRef.current);
+    } else {
+      map.removeLayer(satelliteLayerRef.current);
+      map.removeLayer(labelsLayerRef.current);
+      map.addLayer(osmLayerRef.current);
+    }
+
+    currentModeRef.current = mode;
+    setMapMode(mode);
+  }
+
+  async function handleStreetViewClick() {
+    if (!targetLoc) return;
+    setSvLoading(true);
+    try {
+      await openStreetView(targetLoc.lat, targetLoc.lng);
+    } finally {
+      setSvLoading(false);
+    }
+  }
+
+  if (!mapReady) {
+    return (
+      <div
+        style={{
+          height: 420,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <div
+          className="h-8 w-8 animate-spin rounded-full border-2"
+          style={{
+            borderColor: "rgba(34,211,238,0.2)",
+            borderTopColor: "#22D3EE",
+          }}
+        />
+      </div>
+    );
+  }
+
+  const svDisabled = !targetLoc || svLoading;
+
+  return (
+    <>
+      <div style={{ position: "relative", width: "100%", height: "420px" }}>
+        {/* Leaflet map container */}
+        <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+
+        {/* Floating pill toggle buttons */}
+        <div
+          style={{
+            position: "absolute",
+            top: 12,
+            right: 12,
+            zIndex: 1000,
+            display: "flex",
+            gap: 4,
+            padding: 4,
+            background: "rgba(11,18,32,0.85)",
+            backdropFilter: "blur(8px)",
+            WebkitBackdropFilter: "blur(8px)",
+            borderRadius: 999,
+            border: "1px solid rgba(255,255,255,0.1)",
+          }}
+        >
+          {/* Map button */}
+          <button
+            type="button"
+            onClick={() => handleModeSwitch("map")}
+            data-ocid="dashboard.map.tab"
+            style={{
+              padding: "6px 12px",
+              borderRadius: 999,
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+              transition: "all 0.2s",
+              border:
+                mapMode === "map"
+                  ? "1px solid rgba(34,211,238,0.4)"
+                  : "1px solid transparent",
+              background:
+                mapMode === "map" ? "rgba(34,211,238,0.2)" : "transparent",
+              color: mapMode === "map" ? "#22D3EE" : "#9AA9BC",
+            }}
+          >
+            \ud83d\uddfa Map
+          </button>
+
+          {/* Satellite button */}
+          <button
+            type="button"
+            onClick={() => handleModeSwitch("satellite")}
+            data-ocid="dashboard.satellite.tab"
+            style={{
+              padding: "6px 12px",
+              borderRadius: 999,
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+              transition: "all 0.2s",
+              border:
+                mapMode === "satellite"
+                  ? "1px solid rgba(34,211,238,0.4)"
+                  : "1px solid transparent",
+              background:
+                mapMode === "satellite"
+                  ? "rgba(34,211,238,0.2)"
+                  : "transparent",
+              color: mapMode === "satellite" ? "#22D3EE" : "#9AA9BC",
+            }}
+          >
+            \ud83d\udef0 Satellite
+          </button>
+
+          {/* Street View button */}
+          <button
+            type="button"
+            onClick={handleStreetViewClick}
+            disabled={svDisabled}
+            data-ocid="dashboard.streetview.button"
+            title={
+              !targetLoc
+                ? "Available after target location is received"
+                : "Open Street View at target location"
+            }
+            style={{
+              padding: "6px 12px",
+              borderRadius: 999,
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: svDisabled ? "not-allowed" : "pointer",
+              transition: "all 0.2s",
+              border: "1px solid transparent",
+              background: "transparent",
+              color: "#9AA9BC",
+              opacity: svDisabled ? 0.4 : 1,
+            }}
+          >
+            {svLoading ? "\u23f3 Opening\u2026" : "\ud83d\udc41 Street View"}
+          </button>
+        </div>
+      </div>
+
+      {/* Map legend */}
+      {targetLoc && requesterLoc && (
+        <div
+          className="flex items-center gap-4 px-4 py-2 text-xs"
+          style={{ color: "#9AA9BC" }}
+        >
+          <span>
+            <span style={{ color: "#3B82F6" }}>\u25cf</span> Your Location
+          </span>
+          <span>
+            <span style={{ color: "#EF4444" }}>\u25cf</span> Target Location
+          </span>
+          <span style={{ color: "#9AA9BC", fontSize: 10 }}>
+            Click map for Street View
+          </span>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -234,25 +554,6 @@ export default function DashboardPage() {
   const loc = session?.location;
   const isActive = session?.status === SessionStatus.pending;
 
-  // Compute midpoint and bounds positions for dual-marker map
-  const bothPositions: [number, number][] =
-    loc && requesterLocation
-      ? [
-          [loc.lat, loc.lng],
-          [requesterLocation.lat, requesterLocation.lng],
-        ]
-      : [];
-
-  const mapCenter: [number, number] =
-    loc && requesterLocation
-      ? [
-          (loc.lat + requesterLocation.lat) / 2,
-          (loc.lng + requesterLocation.lng) / 2,
-        ]
-      : loc
-        ? [loc.lat, loc.lng]
-        : [20.5937, 78.9629]; // India center fallback
-
   return (
     <div className="min-h-screen" style={{ background: "#0B1220" }}>
       <Navbar />
@@ -291,7 +592,7 @@ export default function DashboardPage() {
                   }}
                   data-ocid="dashboard.delete_button"
                 >
-                  {stopping ? "Stopping…" : "Stop Tracking"}
+                  {stopping ? "Stopping\u2026" : "Stop Tracking"}
                 </motion.button>
               )}
             </div>
@@ -316,7 +617,7 @@ export default function DashboardPage() {
                       borderTopColor: "#22D3EE",
                     }}
                   />
-                  <p style={{ color: "#9AA9BC" }}>Loading session…</p>
+                  <p style={{ color: "#9AA9BC" }}>Loading session\u2026</p>
                 </GlassCard>
               </motion.div>
             )}
@@ -342,84 +643,22 @@ export default function DashboardPage() {
                 exit={{ opacity: 0 }}
                 className="grid gap-6 lg:grid-cols-5"
               >
-                {/* Map — 3 cols */}
+                {/* Map \u2014 3 cols */}
                 <div className="lg:col-span-3">
                   <GlassCard className="overflow-hidden !p-0">
                     {loc ? (
-                      <>
-                        <div className="h-[420px] w-full">
-                          <MapContainer
-                            center={mapCenter}
-                            zoom={bothPositions.length >= 2 ? 11 : 13}
-                            style={{ height: "100%", width: "100%" }}
-                            className="z-0"
-                          >
-                            <TileLayer
-                              attribution='&copy; <a href="https://carto.com">CARTO</a>'
-                              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                            />
-                            {/* Target marker (Red) */}
-                            <Marker
-                              position={[loc.lat, loc.lng]}
-                              icon={redIcon}
-                            />
-                            <Circle
-                              center={[loc.lat, loc.lng]}
-                              radius={loc.accuracy}
-                              pathOptions={{
-                                color: "#22D3EE",
-                                fillColor: "#22D3EE",
-                                fillOpacity: 0.15,
-                                weight: 1.5,
-                              }}
-                            />
-                            {/* Requester marker (Blue) + Polyline */}
-                            {requesterLocation && (
-                              <>
-                                <Marker
-                                  position={[
-                                    requesterLocation.lat,
-                                    requesterLocation.lng,
-                                  ]}
-                                  icon={blueIcon}
-                                />
-                                <Polyline
-                                  positions={[
-                                    [loc.lat, loc.lng],
-                                    [
-                                      requesterLocation.lat,
-                                      requesterLocation.lng,
-                                    ],
-                                  ]}
-                                  pathOptions={{
-                                    color: "#22D3EE",
-                                    weight: 1.5,
-                                    dashArray: "6, 6",
-                                    opacity: 0.7,
-                                  }}
-                                />
-                                <MapFitBounds positions={bothPositions} />
-                              </>
-                            )}
-                          </MapContainer>
-                        </div>
-                        {/* Map legend */}
-                        {loc && requesterLocation && (
-                          <div
-                            className="flex items-center gap-4 px-4 py-2 text-xs"
-                            style={{ color: "#9AA9BC" }}
-                          >
-                            <span>
-                              <span style={{ color: "#3B82F6" }}>●</span> Your
-                              Location
-                            </span>
-                            <span>
-                              <span style={{ color: "#EF4444" }}>●</span> Target
-                              Location
-                            </span>
-                          </div>
-                        )}
-                      </>
+                      <MapPanel
+                        targetLoc={
+                          loc
+                            ? {
+                                lat: loc.lat,
+                                lng: loc.lng,
+                                accuracy: loc.accuracy,
+                              }
+                            : null
+                        }
+                        requesterLoc={requesterLocation}
+                      />
                     ) : (
                       <div
                         className="flex h-[420px] flex-col items-center justify-center"
@@ -440,11 +679,11 @@ export default function DashboardPage() {
                             border: "1px solid rgba(34,211,238,0.3)",
                           }}
                         >
-                          📍
+                          \ud83d\udccd
                         </motion.div>
                         <p className="font-medium" style={{ color: "#EAF2FF" }}>
                           {session.status === SessionStatus.pending
-                            ? "Waiting for user response…"
+                            ? "Waiting for user response\u2026"
                             : "No location data"}
                         </p>
                         <p
@@ -460,7 +699,7 @@ export default function DashboardPage() {
                   </GlassCard>
                 </div>
 
-                {/* Info panel — 2 cols */}
+                {/* Info panel \u2014 2 cols */}
                 <div className="space-y-4 lg:col-span-2">
                   {/* Status */}
                   <GlassCard>
@@ -520,7 +759,7 @@ export default function DashboardPage() {
                       )}
                     </div>
 
-                    {/* Show My Location button — only when target location exists and requester hasn't shared yet */}
+                    {/* Show My Location button */}
                     {loc && !requesterLocation && (
                       <motion.button
                         whileHover={{ scale: 1.02 }}
@@ -536,8 +775,8 @@ export default function DashboardPage() {
                         data-ocid="dashboard.primary_button"
                       >
                         {myLocLoading
-                          ? "📍 Getting location…"
-                          : "📍 Show My Location"}
+                          ? "\ud83d\udccd Getting location\u2026"
+                          : "\ud83d\udccd Show My Location"}
                       </motion.button>
                     )}
                     {myLocError && (
@@ -561,7 +800,7 @@ export default function DashboardPage() {
                           label="Latitude"
                           value={
                             <span style={{ color: "#22D3EE" }}>
-                              {loc.lat.toFixed(6)}°
+                              {loc.lat.toFixed(6)}\u00b0
                             </span>
                           }
                         />
@@ -569,7 +808,7 @@ export default function DashboardPage() {
                           label="Longitude"
                           value={
                             <span style={{ color: "#22D3EE" }}>
-                              {loc.lng.toFixed(6)}°
+                              {loc.lng.toFixed(6)}\u00b0
                             </span>
                           }
                         />
@@ -606,7 +845,7 @@ export default function DashboardPage() {
                               }}
                             />
                             <p className="text-sm" style={{ color: "#9AA9BC" }}>
-                              Waiting for user response…
+                              Waiting for user response\u2026
                             </p>
                           </div>
                         ) : (
@@ -618,7 +857,7 @@ export default function DashboardPage() {
                     )}
                   </GlassCard>
 
-                  {/* Distance card — shown only when both locations exist */}
+                  {/* Distance card */}
                   {loc && requesterLocation && (
                     <GlassCard>
                       <h3
@@ -628,7 +867,7 @@ export default function DashboardPage() {
                         Distance
                       </h3>
                       <div className="flex items-center gap-3">
-                        <span className="text-2xl">📏</span>
+                        <span className="text-2xl">\ud83d\udccf</span>
                         <div>
                           <p
                             className="text-lg font-bold"
@@ -652,10 +891,11 @@ export default function DashboardPage() {
                         style={{ color: "#9AA9BC" }}
                       >
                         <span>
-                          <span style={{ color: "#3B82F6" }}>●</span> You
+                          <span style={{ color: "#3B82F6" }}>\u25cf</span> You
                         </span>
                         <span>
-                          <span style={{ color: "#EF4444" }}>●</span> Target
+                          <span style={{ color: "#EF4444" }}>\u25cf</span>{" "}
+                          Target
                         </span>
                       </div>
                     </GlassCard>
@@ -689,7 +929,7 @@ export default function DashboardPage() {
         className="mt-12 border-t border-white/5 py-8 text-center text-xs"
         style={{ color: "#9AA9BC" }}
       >
-        © {new Date().getFullYear()}. Built with ❤️ using{" "}
+        \u00a9 {new Date().getFullYear()}. Built with \u2764\ufe0f using{" "}
         <a
           href={`https://caffeine.ai?utm_source=caffeine-footer&utm_medium=referral&utm_content=${encodeURIComponent(window.location.hostname)}`}
           target="_blank"
